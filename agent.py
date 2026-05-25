@@ -1,6 +1,6 @@
 import os
 import json
-from playwright.sync_api import sync_playwright
+import requests
 from bs4 import BeautifulSoup
 from google import genai
 from pydantic import BaseModel
@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Define the expected JSON structure using Pydantic (Strict Schema)
 class LeadReport(BaseModel):
     company_name: str
     main_business: str
@@ -22,37 +21,26 @@ class ResearchAgent:
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not set. Please add it to your .env file.")
-        
-        # Initialize Google GenAI client
         self.client = genai.Client(api_key=self.api_key)
 
     def scrape_website(self, url: str) -> str:
-        """Navigates to the URL using Playwright and extracts readable text."""
         print(f"[*] Agent is navigating to {url}...")
-        
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            html_content = response.text
+        except Exception as e:
+            print(f"[!] Warning during navigation: {e}")
+            html_content = "<html><body>Failed to load</body></html>"
             
-            # Go to the website, wait until the network is idle
-            try:
-                page.goto(url, wait_until="networkidle", timeout=15000)
-            except Exception as e:
-                print(f"[!] Warning during navigation: {e}")
-                
-            html_content = page.content()
-            browser.close()
-            
-        # Parse HTML to clean text
         soup = BeautifulSoup(html_content, "html.parser")
-        
-        # Remove scripts, styles, and empty tags
         for script in soup(["script", "style", "nav", "footer"]):
             script.extract()
             
         text = soup.get_text(separator="\n")
-        
-        # Clean up whitespace
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         clean_text = "\n".join(chunk for chunk in chunks if chunk)
@@ -61,10 +49,7 @@ class ResearchAgent:
         return clean_text
 
     def analyze_company(self, website_text: str) -> str:
-        """Uses Gemini LLM to analyze the scraped text and generate a B2B Lead Report."""
         print("[*] Agent is analyzing the company profile using LLM...")
-        
-        # Truncate text if it's too long (Gemini 1.5 flash has 1M context, but let's be safe)
         if len(website_text) > 50000:
             website_text = website_text[:50000]
             
@@ -88,7 +73,6 @@ class ResearchAgent:
                 temperature=0.2
             ),
         )
-        
         return response.text
 
     def run(self, url: str):
@@ -102,7 +86,6 @@ class ResearchAgent:
             print(report)
             print("="*50 + "\n")
             
-            # Save to file
             domain = url.split("//")[-1].split("/")[0]
             with open(f"{domain}_report.json", "w", encoding="utf-8") as f:
                 f.write(report)
